@@ -35,7 +35,7 @@
 
     <properties>
         <tinkerpop.version>3.3.3</tinkerpop.version>
-        <janus.version>0.2.0</janus.version>
+        <janus.version>0.3.0</janus.version>
         <checkstyle.failOnViolation>false</checkstyle.failOnViolation>
         <lucene-solr.version>7.3.0</lucene-solr.version>
     </properties>
@@ -68,7 +68,7 @@
 
         <dependency>
             <groupId>org.janusgraph</groupId>
-            <artifactId>janusgraph-core</artifactId>
+            <artifactId>janusgraph-server</artifactId>
             <version>${janus.version}</version>
             <exclusions>
                 <exclusion>
@@ -219,7 +219,6 @@
             <version>${tinkerpop.version}</version>
         </dependency>
 
-        <!-- Test dependencies -->
         <dependency>
             <groupId>org.testng</groupId>
             <artifactId>testng</artifactId>

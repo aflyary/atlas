@@ -376,6 +376,9 @@ public class NotificationHookConsumer implements Service, ActiveStateChangeHandl
                     try {
                         RequestContext requestContext = RequestContext.get();
 
+                        requestContext.setAttemptCount(numRetries + 1);
+                        requestContext.setMaxAttempts(maxRetries);
+
                         requestContext.setUser(messageUser, null);
 
                         switch (message.getType()) {
@@ -518,6 +521,8 @@ public class NotificationHookConsumer implements Service, ActiveStateChangeHandl
 
                         break;
                     } catch (Throwable e) {
+                        RequestContext.get().resetEntityGuidUpdates();
+
                         LOG.warn("Error handling message", e);
                         try {
                             LOG.info("Sleeping for {} ms before retry", consumerRetryInterval);

@@ -48,15 +48,30 @@ define(['require', 'utils/Enums', 'utils/Utils', 'underscore'], function(require
                 return defApiUrl.defs + '?excludeInternalTypesAndReferences=true&type=' + type;
             }
         },
-        entitiesApiUrl: function(guid, name) {
+        entitiesApiUrl: function(options) {
             var entitiesUrl = this.baseUrlV2 + '/entity';
-            if (guid && name) {
-                return entitiesUrl + '/guid/' + guid + '/classification/' + name;
-            } else if (guid && !name) {
-                return entitiesUrl + '/guid/' + guid;
-            } else {
-                return entitiesUrl;
+            if (options) {
+                var guid = options.guid,
+                    associatedGuid = options.associatedGuid,
+                    name = options.name,
+                    minExtInfo = options.minExtInfo;
+                if (guid && name && associatedGuid) {
+                    return entitiesUrl + '/guid/' + guid + '/classification/' + name + '?associatedEntityGuid=' + associatedGuid;
+                } else if (guid && name) {
+                    entitiesUrl += '/guid/' + guid + '/classification/' + name;
+                } else if (guid && !name) {
+                    entitiesUrl += '/guid/' + guid;
+                }
             }
+
+            if (!minExtInfo) {
+                return entitiesUrl;
+            } else {
+                return entitiesUrl += '?minExtInfo=' + (minExtInfo);
+            }
+        },
+        entityHeaderApiUrl: function(guid) {
+            return this.entitiesApiUrl({ guid: guid }) + "/header"
         },
         entitiesTraitsApiUrl: function(token) {
             if (token) {

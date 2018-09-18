@@ -101,16 +101,52 @@ public class AtlasEntityStoreV2 implements AtlasEntityStore {
     @Override
     @GraphTransaction
     public AtlasEntityWithExtInfo getById(String guid) throws AtlasBaseException {
+        return getById(guid, false);
+    }
+
+    @Override
+    @GraphTransaction
+    public AtlasEntityWithExtInfo getById(final String guid, final boolean isMinExtInfo) throws AtlasBaseException {
         if (LOG.isDebugEnabled()) {
-            LOG.debug("==> getById({})", guid);
+            LOG.debug("==> getById({}, {})", guid, isMinExtInfo);
         }
 
-        AtlasEntityWithExtInfo ret = entityRetriever.toAtlasEntityWithExtInfo(guid);
+        EntityGraphRetriever entityRetriever = new EntityGraphRetriever(typeRegistry);
+
+        AtlasEntityWithExtInfo ret = entityRetriever.toAtlasEntityWithExtInfo(guid, isMinExtInfo);
+
+        if (ret == null) {
+            throw new AtlasBaseException(AtlasErrorCode.INSTANCE_GUID_NOT_FOUND, guid);
+        }
 
         AtlasAuthorizationUtils.verifyAccess(new AtlasEntityAccessRequest(typeRegistry, AtlasPrivilege.ENTITY_READ, new AtlasEntityHeader(ret.getEntity())), "read entity: guid=", guid);
 
         if (LOG.isDebugEnabled()) {
-            LOG.debug("<== getById({}): {}", guid, ret);
+            LOG.debug("<== getById({}, {}): {}", guid, isMinExtInfo, ret);
+        }
+
+        return ret;
+    }
+
+    @Override
+    @GraphTransaction
+    public AtlasEntityHeader getHeaderById(final String guid) throws AtlasBaseException {
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("==> getHeaderById({})", guid);
+        }
+
+        EntityGraphRetriever entityRetriever = new EntityGraphRetriever(typeRegistry);
+
+        AtlasEntityHeader ret = entityRetriever.toAtlasEntityHeader(guid);
+
+        if (ret == null) {
+            throw new AtlasBaseException(AtlasErrorCode.INSTANCE_GUID_NOT_FOUND, guid);
+        }
+
+        AtlasAuthorizationUtils.verifyAccess(new AtlasEntityAccessRequest(typeRegistry, AtlasPrivilege.ENTITY_READ, ret), "read entity: guid=", guid);
+
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("<== getHeaderById({}): {}", guid, ret);
         }
 
         return ret;
@@ -119,13 +155,20 @@ public class AtlasEntityStoreV2 implements AtlasEntityStore {
     @Override
     @GraphTransaction
     public AtlasEntitiesWithExtInfo getByIds(List<String> guids) throws AtlasBaseException {
+        return getByIds(guids, false);
+    }
+
+    @Override
+    @GraphTransaction
+    public AtlasEntitiesWithExtInfo getByIds(List<String> guids, boolean isMinExtInfo) throws AtlasBaseException {
         if (LOG.isDebugEnabled()) {
-            LOG.debug("==> getByIds({})", guids);
+            LOG.debug("==> getByIds({}, {})", guids, isMinExtInfo);
         }
 
-        AtlasEntitiesWithExtInfo ret = entityRetriever.toAtlasEntitiesWithExtInfo(guids);
+        EntityGraphRetriever entityRetriever = new EntityGraphRetriever(typeRegistry);
 
-        // verify authorization to read the entities
+        AtlasEntitiesWithExtInfo ret = entityRetriever.toAtlasEntitiesWithExtInfo(guids, isMinExtInfo);
+
         if(ret != null){
             for(String guid : guids){
                 AtlasEntity entity = ret.getEntity(guid);
@@ -135,7 +178,7 @@ public class AtlasEntityStoreV2 implements AtlasEntityStore {
         }
 
         if (LOG.isDebugEnabled()) {
-            LOG.debug("<== getByIds({}): {}", guids, ret);
+            LOG.debug("<== getByIds({}, {}): {}", guids, isMinExtInfo, ret);
         }
 
         return ret;
@@ -143,13 +186,29 @@ public class AtlasEntityStoreV2 implements AtlasEntityStore {
 
     @Override
     @GraphTransaction
-    public AtlasEntityWithExtInfo getByUniqueAttributes(AtlasEntityType entityType, Map<String, Object> uniqAttributes) throws AtlasBaseException {
+    public AtlasEntityWithExtInfo getByUniqueAttributes(AtlasEntityType entityType, Map<String, Object> uniqAttributes)
+            throws AtlasBaseException {
+        return getByUniqueAttributes(entityType, uniqAttributes, false);
+    }
+
+    @Override
+    @GraphTransaction
+    public AtlasEntityWithExtInfo getByUniqueAttributes(AtlasEntityType entityType, Map<String, Object> uniqAttributes, boolean isMinExtInfo)
+            throws AtlasBaseException {
         if (LOG.isDebugEnabled()) {
             LOG.debug("==> getByUniqueAttribute({}, {})", entityType.getTypeName(), uniqAttributes);
         }
 
-        AtlasVertex            entityVertex = AtlasGraphUtilsV2.getVertexByUniqueAttributes(entityType, uniqAttributes);
-        AtlasEntityWithExtInfo ret          = entityRetriever.toAtlasEntityWithExtInfo(entityVertex);
+        AtlasVertex entityVertex = AtlasGraphUtilsV2.getVertexByUniqueAttributes(entityType, uniqAttributes);
+
+        EntityGraphRetriever entityRetriever = new EntityGraphRetriever(typeRegistry);
+
+        AtlasEntityWithExtInfo ret = entityRetriever.toAtlasEntityWithExtInfo(entityVertex, isMinExtInfo);
+
+        if (ret == null) {
+            throw new AtlasBaseException(AtlasErrorCode.INSTANCE_BY_UNIQUE_ATTRIBUTE_NOT_FOUND, entityType.getTypeName(),
+                                         uniqAttributes.toString());
+        }
 
         AtlasAuthorizationUtils.verifyAccess(new AtlasEntityAccessRequest(typeRegistry, AtlasPrivilege.ENTITY_READ, new AtlasEntityHeader(ret.getEntity())), "read entity: typeName=", entityType.getTypeName(), ", uniqueAttributes=", uniqAttributes);
 
@@ -480,27 +539,36 @@ public class AtlasEntityStoreV2 implements AtlasEntityStore {
 
     @Override
     @GraphTransaction
-    public void deleteClassifications(final String guid, final List<String> classificationNames) throws AtlasBaseException {
+    public void deleteClassification(final String guid, final String classificationName) throws AtlasBaseException {
+        deleteClassification(guid, classificationName, null);
+    }
+
+    @Override
+    @GraphTransaction
+    public void deleteClassification(final String guid, final String classificationName, final String associatedEntityGuid) throws AtlasBaseException {
         if (StringUtils.isEmpty(guid)) {
             throw new AtlasBaseException(AtlasErrorCode.INVALID_PARAMETERS, "Guid(s) not specified");
         }
-        if (CollectionUtils.isEmpty(classificationNames)) {
-            throw new AtlasBaseException(AtlasErrorCode.INVALID_PARAMETERS, "classifications(s) not specified");
+        if (StringUtils.isEmpty(classificationName)) {
+            throw new AtlasBaseException(AtlasErrorCode.INVALID_PARAMETERS, "classifications not specified");
         }
 
         AtlasEntityHeader entityHeader = entityRetriever.toAtlasEntityHeaderWithClassifications(guid);
 
-        for (String classification : classificationNames) {
-            AtlasAuthorizationUtils.verifyAccess(new AtlasEntityAccessRequest(typeRegistry, AtlasPrivilege.ENTITY_REMOVE_CLASSIFICATION, entityHeader, new AtlasClassification(classification)), "remove classification: guid=", guid, ", classification=", classification);
+        // verify authorization only for removal of directly associated classification and not propagated one.
+        if (StringUtils.isEmpty(associatedEntityGuid) || guid.equals(associatedEntityGuid)) {
+            AtlasAuthorizationUtils.verifyAccess(new AtlasEntityAccessRequest(typeRegistry, AtlasPrivilege.ENTITY_REMOVE_CLASSIFICATION,
+                                                 entityHeader, new AtlasClassification(classificationName)),
+                                                 "remove classification: guid=", guid, ", classification=", classificationName);
         }
 
         if (LOG.isDebugEnabled()) {
-            LOG.debug("Deleting classifications={} from entity={}", classificationNames, guid);
+            LOG.debug("Deleting classification={} from entity={}", classificationName, guid);
         }
 
         GraphTransactionInterceptor.lockObjectAndReleasePostCommit(guid);
 
-        entityGraphMapper.deleteClassifications(guid, classificationNames);
+        entityGraphMapper.deleteClassification(guid, classificationName, associatedEntityGuid);
     }
 
 
@@ -647,6 +715,7 @@ public class AtlasEntityStoreV2 implements AtlasEntityStore {
         EntityGraphDiscovery        graphDiscoverer  = new AtlasEntityGraphDiscoveryV2(typeRegistry, entityStream);
         EntityGraphDiscoveryContext discoveryContext = graphDiscoverer.discoverEntities();
         EntityMutationContext       context          = new EntityMutationContext(discoveryContext);
+        RequestContext              requestContext   = RequestContext.get();
 
         for (String guid : discoveryContext.getReferencedGuids()) {
             AtlasVertex vertex = discoveryContext.getResolvedEntityVertex(guid);
@@ -666,6 +735,8 @@ public class AtlasEntityStoreV2 implements AtlasEntityStore {
 
                     if (!StringUtils.equals(guidVertex, guid)) { // if entity was found by unique attribute
                         entity.setGuid(guidVertex);
+
+                        requestContext.recordEntityGuidUpdate(entity, guid);
                     }
 
                     context.addUpdated(guid, entity, entityType, vertex);
@@ -687,6 +758,8 @@ public class AtlasEntityStoreV2 implements AtlasEntityStore {
                     String generatedGuid = AtlasGraphUtilsV2.getIdFromVertex(vertex);
 
                     entity.setGuid(generatedGuid);
+
+                    requestContext.recordEntityGuidUpdate(entity, guid);
 
                     context.addCreated(guid, entity, entityType, vertex);
                 }

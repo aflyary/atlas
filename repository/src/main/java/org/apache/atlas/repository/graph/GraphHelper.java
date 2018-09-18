@@ -26,6 +26,7 @@ import org.apache.atlas.AtlasErrorCode;
 import org.apache.atlas.AtlasException;
 import org.apache.atlas.RequestContext;
 import org.apache.atlas.exception.AtlasBaseException;
+import org.apache.atlas.model.instance.AtlasEntity;
 import org.apache.atlas.model.instance.AtlasEntity.Status;
 import org.apache.atlas.model.instance.AtlasObjectId;
 import org.apache.atlas.model.instance.AtlasRelationship;
@@ -76,16 +77,29 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
+import static org.apache.atlas.model.instance.AtlasEntity.Status.ACTIVE;
 import static org.apache.atlas.model.instance.AtlasEntity.Status.DELETED;
 import static org.apache.atlas.repository.Constants.ATTRIBUTE_INDEX_PROPERTY_KEY;
 import static org.apache.atlas.repository.Constants.ATTRIBUTE_KEY_PROPERTY_KEY;
 import static org.apache.atlas.repository.Constants.CLASSIFICATION_EDGE_IS_PROPAGATED_PROPERTY_KEY;
 import static org.apache.atlas.repository.Constants.CLASSIFICATION_ENTITY_GUID;
+import static org.apache.atlas.repository.Constants.CLASSIFICATION_ENTITY_STATUS;
 import static org.apache.atlas.repository.Constants.CLASSIFICATION_LABEL;
 import static org.apache.atlas.repository.Constants.CLASSIFICATION_EDGE_NAME_PROPERTY_KEY;
 import static org.apache.atlas.repository.Constants.CLASSIFICATION_VERTEX_NAME_KEY;
 import static org.apache.atlas.repository.Constants.CLASSIFICATION_VERTEX_PROPAGATE_KEY;
+import static org.apache.atlas.repository.Constants.CLASSIFICATION_VERTEX_REMOVE_PROPAGATIONS_KEY;
+import static org.apache.atlas.repository.Constants.CREATED_BY_KEY;
+import static org.apache.atlas.repository.Constants.ENTITY_TYPE_PROPERTY_KEY;
+import static org.apache.atlas.repository.Constants.MODIFICATION_TIMESTAMP_PROPERTY_KEY;
+import static org.apache.atlas.repository.Constants.MODIFIED_BY_KEY;
 import static org.apache.atlas.repository.Constants.PROPAGATED_TRAIT_NAMES_PROPERTY_KEY;
+import static org.apache.atlas.repository.Constants.RELATIONSHIPTYPE_BLOCKED_PROPAGATED_CLASSIFICATIONS_KEY;
+import static org.apache.atlas.repository.Constants.RELATIONSHIPTYPE_TAG_PROPAGATION_KEY;
+import static org.apache.atlas.repository.Constants.STATE_PROPERTY_KEY;
+import static org.apache.atlas.repository.Constants.SUPER_TYPES_PROPERTY_KEY;
+import static org.apache.atlas.repository.Constants.TERM_ASSIGNMENT_LABEL;
+import static org.apache.atlas.repository.Constants.TIMESTAMP_PROPERTY_KEY;
 import static org.apache.atlas.repository.store.graph.v2.AtlasGraphUtilsV2.isReference;
 import static org.apache.atlas.type.AtlasStructType.AtlasAttribute.AtlasRelationshipEdgeDirection.BOTH;
 import static org.apache.atlas.type.AtlasStructType.AtlasAttribute.AtlasRelationshipEdgeDirection.IN;
@@ -105,21 +119,25 @@ public final class GraphHelper {
 
     public static final String RETRY_COUNT = "atlas.graph.storage.num.retries";
     public static final String RETRY_DELAY = "atlas.graph.storage.retry.sleeptime.ms";
+    public static final String DEFAULT_REMOVE_PROPAGATIONS_ON_ENTITY_DELETE = "atlas.graph.remove.propagations.default";
 
     private final AtlasGremlinQueryProvider queryProvider = AtlasGremlinQueryProvider.INSTANCE;
 
     private static volatile GraphHelper INSTANCE;
 
     private AtlasGraph graph;
-    private static int maxRetries;
-    public static long retrySleepTimeMillis;
+
+    private static int     maxRetries;
+    private static long    retrySleepTimeMillis;
+    private static boolean removePropagations;
 
     @VisibleForTesting
     GraphHelper(AtlasGraph graph) {
         this.graph = graph;
         try {
-            maxRetries = ApplicationProperties.get().getInt(RETRY_COUNT, 3);
+            maxRetries           = ApplicationProperties.get().getInt(RETRY_COUNT, 3);
             retrySleepTimeMillis = ApplicationProperties.get().getLong(RETRY_DELAY, 1000);
+            removePropagations   = ApplicationProperties.get().getBoolean(DEFAULT_REMOVE_PROPAGATIONS_ON_ENTITY_DELETE, false);
         } catch (AtlasException e) {
             LOG.error("Could not load configuration. Setting to default value for " + RETRY_COUNT, e);
         }
@@ -148,6 +166,9 @@ public final class GraphHelper {
         return INSTANCE;
     }
 
+    public static boolean isTermEntityEdge(AtlasEdge edge) {
+        return StringUtils.equals(edge.getLabel(), TERM_ASSIGNMENT_LABEL);
+    }
 
     public AtlasVertex createVertexWithIdentity(Referenceable typedInstance, Set<String> superTypeNames) {
         final String guid = UUID.randomUUID().toString();
@@ -156,50 +177,41 @@ public final class GraphHelper {
                 new Id(guid, 0, typedInstance.getTypeName()), superTypeNames);
 
         // add identity
-        setProperty(vertexWithIdentity, Constants.GUID_PROPERTY_KEY, guid);
+        AtlasGraphUtilsV2.setEncodedProperty(vertexWithIdentity, Constants.GUID_PROPERTY_KEY, guid);
 
         // add version information
-        setProperty(vertexWithIdentity, Constants.VERSION_PROPERTY_KEY, Long.valueOf(typedInstance.getId().getVersion()));
+        AtlasGraphUtilsV2.setEncodedProperty(vertexWithIdentity, Constants.VERSION_PROPERTY_KEY, Long.valueOf(typedInstance.getId().getVersion()));
 
         return vertexWithIdentity;
     }
 
     public AtlasVertex createVertexWithoutIdentity(String typeName, Id typedInstanceId, Set<String> superTypeNames) {
         if (LOG.isDebugEnabled()) {
-            LOG.debug("Creating AtlasVertex for type {} id {}", typeName,
-                      typedInstanceId != null ? typedInstanceId._getId() : null);
+            LOG.debug("Creating AtlasVertex for type {} id {}", typeName, typedInstanceId != null ? typedInstanceId._getId() : null);
         }
 
-        final AtlasVertex vertexWithoutIdentity = graph.addVertex();
+        final AtlasVertex ret = graph.addVertex();
 
-        // add type information
-        setProperty(vertexWithoutIdentity, Constants.ENTITY_TYPE_PROPERTY_KEY, typeName);
+        AtlasGraphUtilsV2.setEncodedProperty(ret, ENTITY_TYPE_PROPERTY_KEY, typeName);
+        AtlasGraphUtilsV2.setEncodedProperty(ret, STATE_PROPERTY_KEY, ACTIVE.name());
+        AtlasGraphUtilsV2.setEncodedProperty(ret, TIMESTAMP_PROPERTY_KEY, RequestContext.get().getRequestTime());
+        AtlasGraphUtilsV2.setEncodedProperty(ret, MODIFICATION_TIMESTAMP_PROPERTY_KEY, RequestContext.get().getRequestTime());
+        AtlasGraphUtilsV2.setEncodedProperty(ret, CREATED_BY_KEY, RequestContext.get().getUser());
+        AtlasGraphUtilsV2.setEncodedProperty(ret, MODIFIED_BY_KEY, RequestContext.get().getUser());
 
-
-        // add super types
         for (String superTypeName : superTypeNames) {
-            addProperty(vertexWithoutIdentity, Constants.SUPER_TYPES_PROPERTY_KEY, superTypeName);
+            AtlasGraphUtilsV2.addEncodedProperty(ret, SUPER_TYPES_PROPERTY_KEY, superTypeName);
         }
 
-        // add state information
-        setProperty(vertexWithoutIdentity, Constants.STATE_PROPERTY_KEY, Id.EntityState.ACTIVE.name());
-
-        // add timestamp information
-        setProperty(vertexWithoutIdentity, Constants.TIMESTAMP_PROPERTY_KEY, RequestContext.get().getRequestTime());
-        setProperty(vertexWithoutIdentity, Constants.MODIFICATION_TIMESTAMP_PROPERTY_KEY,
-                    RequestContext.get().getRequestTime());
-
-        setProperty(vertexWithoutIdentity, Constants.CREATED_BY_KEY, RequestContext.get().getUser());
-        setProperty(vertexWithoutIdentity, Constants.MODIFIED_BY_KEY, RequestContext.get().getUser());
-        return vertexWithoutIdentity;
+        return ret;
     }
 
     public AtlasEdge addClassificationEdge(AtlasVertex entityVertex, AtlasVertex classificationVertex, boolean isPropagated) {
         AtlasEdge ret = addEdge(entityVertex, classificationVertex, CLASSIFICATION_LABEL);
 
         if (ret != null) {
-            AtlasGraphUtilsV2.setProperty(ret, CLASSIFICATION_EDGE_NAME_PROPERTY_KEY, getTypeName(classificationVertex));
-            AtlasGraphUtilsV2.setProperty(ret, CLASSIFICATION_EDGE_IS_PROPAGATED_PROPERTY_KEY, isPropagated);
+            AtlasGraphUtilsV2.setEncodedProperty(ret, CLASSIFICATION_EDGE_NAME_PROPERTY_KEY, getTypeName(classificationVertex));
+            AtlasGraphUtilsV2.setEncodedProperty(ret, CLASSIFICATION_EDGE_IS_PROPAGATED_PROPERTY_KEY, isPropagated);
         }
 
         return ret;
@@ -215,11 +227,11 @@ public final class GraphHelper {
         ret = graph.addEdge(fromVertex, toVertex, edgeLabel);
 
         if (ret != null) {
-            setProperty(ret, Constants.STATE_PROPERTY_KEY, Id.EntityState.ACTIVE.name());
-            setProperty(ret, Constants.TIMESTAMP_PROPERTY_KEY, RequestContext.get().getRequestTime());
-            setProperty(ret, Constants.MODIFICATION_TIMESTAMP_PROPERTY_KEY, RequestContext.get().getRequestTime());
-            setProperty(ret, Constants.CREATED_BY_KEY, RequestContext.get().getUser());
-            setProperty(ret, Constants.MODIFIED_BY_KEY, RequestContext.get().getUser());
+            AtlasGraphUtilsV2.setEncodedProperty(ret, STATE_PROPERTY_KEY, ACTIVE.name());
+            AtlasGraphUtilsV2.setEncodedProperty(ret, TIMESTAMP_PROPERTY_KEY, RequestContext.get().getRequestTime());
+            AtlasGraphUtilsV2.setEncodedProperty(ret, MODIFICATION_TIMESTAMP_PROPERTY_KEY, RequestContext.get().getRequestTime());
+            AtlasGraphUtilsV2.setEncodedProperty(ret, CREATED_BY_KEY, RequestContext.get().getUser());
+            AtlasGraphUtilsV2.setEncodedProperty(ret, MODIFIED_BY_KEY, RequestContext.get().getUser());
 
             if (LOG.isDebugEnabled()) {
                 LOG.debug("Added {}", string(ret));
@@ -376,7 +388,19 @@ public final class GraphHelper {
         boolean ret = false;
 
         if (classificationVertex != null) {
-            Boolean enabled = AtlasGraphUtilsV2.getProperty(classificationVertex, CLASSIFICATION_VERTEX_PROPAGATE_KEY, Boolean.class);
+            Boolean enabled = AtlasGraphUtilsV2.getEncodedProperty(classificationVertex, CLASSIFICATION_VERTEX_PROPAGATE_KEY, Boolean.class);
+
+            ret = (enabled == null) ? true : enabled;
+        }
+
+        return ret;
+    }
+
+    public static boolean getRemovePropagations(AtlasVertex classificationVertex) {
+        boolean ret = false;
+
+        if (classificationVertex != null) {
+            Boolean enabled = AtlasGraphUtilsV2.getEncodedProperty(classificationVertex, CLASSIFICATION_VERTEX_REMOVE_PROPAGATIONS_KEY, Boolean.class);
 
             ret = (enabled == null) ? true : enabled;
         }
@@ -433,7 +457,7 @@ public final class GraphHelper {
                 AtlasVertex classificationVertex = (edge != null) ? edge.getInVertex() : null;
 
                 if (classificationVertex != null) {
-                    String guid = AtlasGraphUtilsV2.getProperty(classificationVertex, CLASSIFICATION_ENTITY_GUID, String.class);
+                    String guid = AtlasGraphUtilsV2.getEncodedProperty(classificationVertex, CLASSIFICATION_ENTITY_GUID, String.class);
 
                     if (StringUtils.equals(guid, associatedEntityGuid)) {
                         ret = edge;
@@ -473,6 +497,24 @@ public final class GraphHelper {
         Iterable        edges = classificationVertex.query().direction(AtlasEdgeDirection.IN).label(CLASSIFICATION_LABEL)
                                                     .has(CLASSIFICATION_EDGE_IS_PROPAGATED_PROPERTY_KEY, true)
                                                     .has(CLASSIFICATION_EDGE_NAME_PROPERTY_KEY, getTypeName(classificationVertex)).edges();
+        if (edges != null) {
+            Iterator<AtlasEdge> iterator = edges.iterator();
+
+            while (iterator.hasNext()) {
+                AtlasEdge edge = iterator.next();
+
+                ret.add(edge);
+            }
+        }
+
+        return ret;
+    }
+
+    public static List<AtlasEdge> getIncomingClassificationEdges(AtlasVertex classificationVertex) {
+        List<AtlasEdge> ret                = new ArrayList<>();
+        String          classificationName = getTypeName(classificationVertex);
+        Iterable        edges              = classificationVertex.query().direction(AtlasEdgeDirection.IN).label(CLASSIFICATION_LABEL)
+                                                                 .has(CLASSIFICATION_EDGE_NAME_PROPERTY_KEY, classificationName).edges();
         if (edges != null) {
             Iterator<AtlasEdge> iterator = edges.iterator();
 
@@ -577,7 +619,7 @@ public final class GraphHelper {
 
                 return edge;
             } else {
-                Long modificationTime = edge.getProperty(Constants.MODIFICATION_TIMESTAMP_PROPERTY_KEY, Long.class);
+                Long modificationTime = edge.getProperty(MODIFICATION_TIMESTAMP_PROPERTY_KEY, Long.class);
                 if (modificationTime != null && modificationTime >= latestDeletedEdgeTime) {
                     latestDeletedEdgeTime = modificationTime;
                     latestDeletedEdge = edge;
@@ -608,83 +650,6 @@ public final class GraphHelper {
                 + edge.getInVertex() + "]";
     }
 
-    public static <T extends AtlasElement> void setProperty(T element, String propertyName, Object value) {
-        String actualPropertyName = GraphHelper.encodePropertyKey(propertyName);
-
-        String elementStr = null;
-
-        if (LOG.isDebugEnabled()) {
-            elementStr = string(element);
-
-            LOG.debug("Setting property {} = \"{}\" to {}", actualPropertyName, value, elementStr);
-        }
-
-        Object existValue = element.getProperty(actualPropertyName, Object.class);
-        if(value == null || (value instanceof Collection && ((Collection) value).isEmpty())) {
-            if(existValue != null) {
-                if (LOG.isDebugEnabled()) {
-                    LOG.debug("Removing property - {} value from {}", actualPropertyName, elementStr);
-                }
-
-                element.removeProperty(actualPropertyName);
-            }
-        } else {
-            if (!value.equals(existValue)) {
-                element.setProperty(actualPropertyName, value);
-
-                if (LOG.isDebugEnabled()) {
-                    LOG.debug("Set property {} = \"{}\" to {}", actualPropertyName, value, elementStr);
-                }
-            }
-        }
-    }
-
-    /**
-     * Gets the value of a property that is stored in the graph as a single property value.  If
-     * a multi-property such as {@link Constants#TRAIT_NAMES_PROPERTY_KEY} or {@link Constants#SUPER_TYPES_PROPERTY_KEY}
-     * is used, an exception will be thrown.
-     *
-     * @param element
-     * @param propertyName
-     * @param clazz
-     * @return
-     */
-    public static <T> T getSingleValuedProperty(AtlasElement element, String propertyName, Class<T> clazz) {
-        String actualPropertyName = GraphHelper.encodePropertyKey(propertyName);
-
-        if (LOG.isTraceEnabled()) {
-            LOG.trace("Reading property {} from {}", actualPropertyName, string(element));
-        }
-
-        return element.getProperty(actualPropertyName, clazz);
-    }
-
-
-    public static Object getProperty(AtlasVertex<?,?> vertex, String propertyName) {
-        String actualPropertyName = GraphHelper.encodePropertyKey(propertyName);
-
-        if (LOG.isTraceEnabled()) {
-            LOG.trace("Reading property {} from {}", actualPropertyName, string(vertex));
-        }
-
-        if(AtlasGraphProvider.getGraphInstance().isMultiProperty(actualPropertyName)) {
-            return vertex.getPropertyValues(actualPropertyName, String.class);
-        }
-        else {
-            return vertex.getProperty(actualPropertyName, Object.class);
-        }
-    }
-
-    public static Object getProperty(AtlasEdge<?,?> edge, String propertyName) {
-        String actualPropertyName = GraphHelper.encodePropertyKey(propertyName);
-
-        if (LOG.isTraceEnabled()) {
-            LOG.trace("Reading property {} from {}", actualPropertyName, string(edge));
-        }
-
-        return edge.getProperty(actualPropertyName, Object.class);
-    }
-
     private static <T extends AtlasElement> String string(T element) {
         if (element instanceof AtlasVertex) {
             return string((AtlasVertex) element);
@@ -694,45 +659,12 @@ public final class GraphHelper {
         return element.toString();
     }
 
-    /**
-     * Adds an additional value to a multi-property (SET).
-     *
-     * @param vertex
-     * @param propertyName
-     * @param value
-     */
-    public static void addProperty(AtlasVertex vertex, String propertyName, Object value) {
-        String actualPropertyName = GraphHelper.encodePropertyKey(propertyName);
-
-        if (LOG.isDebugEnabled()) {
-            LOG.debug("Adding property {} = \"{}\" to vertex {}", actualPropertyName, value, string(vertex));
-        }
-
-        vertex.addProperty(actualPropertyName, value);
-    }
-
     public static void addToPropagatedTraitNames(AtlasVertex entityVertex, String classificationName) {
-        String actualPropertyName = GraphHelper.encodePropertyKey(PROPAGATED_TRAIT_NAMES_PROPERTY_KEY);
-
         if (LOG.isDebugEnabled()) {
-            LOG.debug("Adding property {} = \"{}\" to vertex {}", actualPropertyName, classificationName, string(entityVertex));
+            LOG.debug("Adding property {} = \"{}\" to vertex {}", PROPAGATED_TRAIT_NAMES_PROPERTY_KEY, classificationName, string(entityVertex));
         }
 
-        entityVertex.addListProperty(actualPropertyName, classificationName);
-    }
-
-    public static void removeFromPropagatedTraitNames(AtlasVertex entityVertex, String classificationName) {
-        if (entityVertex != null && StringUtils.isNotEmpty(classificationName)) {
-            List<String> propagatedTraitNames = getTraitNames(entityVertex, true);
-
-            propagatedTraitNames.remove(classificationName);
-
-            entityVertex.removeProperty(PROPAGATED_TRAIT_NAMES_PROPERTY_KEY);
-
-            for (String propagatedTraitName : propagatedTraitNames) {
-                addToPropagatedTraitNames(entityVertex, propagatedTraitName);
-            }
-        }
+        entityVertex.addListProperty(PROPAGATED_TRAIT_NAMES_PROPERTY_KEY, classificationName);
     }
 
     /**
@@ -960,8 +892,8 @@ public final class GraphHelper {
     }
 
     public static void updateModificationMetadata(AtlasVertex vertex) {
-        AtlasGraphUtilsV2.setProperty(vertex, Constants.MODIFICATION_TIMESTAMP_PROPERTY_KEY, RequestContext.get().getRequestTime());
-        AtlasGraphUtilsV2.setProperty(vertex, Constants.MODIFIED_BY_KEY, RequestContext.get().getUser());
+        AtlasGraphUtilsV2.setEncodedProperty(vertex, MODIFICATION_TIMESTAMP_PROPERTY_KEY, RequestContext.get().getRequestTime());
+        AtlasGraphUtilsV2.setEncodedProperty(vertex, MODIFIED_BY_KEY, RequestContext.get().getUser());
     }
 
     public static String getQualifiedNameForMapKey(String prefix, String key) {
@@ -978,6 +910,10 @@ public final class GraphHelper {
 
     public static List<String> getTraitNames(AtlasVertex entityVertex) {
         return getTraitNames(entityVertex, false);
+    }
+
+    public static List<String> getPropagatedTraitNames(AtlasVertex entityVertex) {
+        return getTraitNames(entityVertex, true);
     }
 
     public static List<String> getAllTraitNames(AtlasVertex entityVertex) {
@@ -1000,7 +936,7 @@ public final class GraphHelper {
             while (iterator.hasNext()) {
                 AtlasEdge edge = iterator.next();
 
-                ret.add(AtlasGraphUtilsV2.getProperty(edge, CLASSIFICATION_EDGE_NAME_PROPERTY_KEY, String.class));
+                ret.add(AtlasGraphUtilsV2.getEncodedProperty(edge, CLASSIFICATION_EDGE_NAME_PROPERTY_KEY, String.class));
             }
         }
 
@@ -1109,7 +1045,7 @@ public final class GraphHelper {
 
     public static List<String> getSuperTypeNames(AtlasVertex<?,?> entityVertex) {
         ArrayList<String>  superTypes     = new ArrayList<>();
-        Collection<String> propertyValues = entityVertex.getPropertyValues(Constants.SUPER_TYPES_PROPERTY_KEY, String.class);
+        Collection<String> propertyValues = entityVertex.getPropertyValues(SUPER_TYPES_PROPERTY_KEY, String.class);
 
         if (CollectionUtils.isNotEmpty(propertyValues)) {
             for(String value : propertyValues) {
@@ -1146,8 +1082,12 @@ public final class GraphHelper {
         return element.getProperty(Constants.HOME_ID_KEY, String.class);
     }
 
+    public static Boolean isProxy(AtlasElement element) {
+        return element.getProperty(Constants.IS_PROXY_KEY, Boolean.class);
+    }
+
     public static String getTypeName(AtlasElement element) {
-        return element.getProperty(Constants.ENTITY_TYPE_PROPERTY_KEY, String.class);
+        return element.getProperty(ENTITY_TYPE_PROPERTY_KEY, String.class);
     }
 
     public static Id.EntityState getState(AtlasElement element) {
@@ -1160,7 +1100,7 @@ public final class GraphHelper {
     }
 
     public static String getStateAsString(AtlasElement element) {
-        return element.getProperty(Constants.STATE_PROPERTY_KEY, String.class);
+        return element.getProperty(STATE_PROPERTY_KEY, String.class);
     }
 
     public static Status getStatus(AtlasElement element) {
@@ -1172,11 +1112,11 @@ public final class GraphHelper {
     }
 
     public static String getClassificationName(AtlasVertex classificationVertex) {
-        return AtlasGraphUtilsV2.getProperty(classificationVertex, CLASSIFICATION_VERTEX_NAME_KEY, String.class);
+        return AtlasGraphUtilsV2.getEncodedProperty(classificationVertex, CLASSIFICATION_VERTEX_NAME_KEY, String.class);
     }
 
     public static String getClassificationEntityGuid(AtlasVertex classificationVertex) {
-        return AtlasGraphUtilsV2.getProperty(classificationVertex, CLASSIFICATION_ENTITY_GUID, String.class);
+        return AtlasGraphUtilsV2.getEncodedProperty(classificationVertex, CLASSIFICATION_ENTITY_GUID, String.class);
     }
 
     public static Integer getIndexValue(AtlasEdge edge) {
@@ -1198,11 +1138,26 @@ public final class GraphHelper {
         return ret;
     }
 
+    public static boolean isClassificationEdge(AtlasEdge edge) {
+        boolean ret = false;
+
+        if (edge != null) {
+            String  edgeLabel    = edge.getLabel();
+            Boolean isPropagated = edge.getProperty(Constants.CLASSIFICATION_EDGE_IS_PROPAGATED_PROPERTY_KEY, Boolean.class);
+
+            if (edgeLabel != null && isPropagated != null) {
+                ret = edgeLabel.equals(CLASSIFICATION_LABEL) && !isPropagated;
+            }
+        }
+
+        return ret;
+    }
+
     public static List<String> getBlockedClassificationIds(AtlasEdge edge) {
         List<String> ret = null;
 
         if (edge != null) {
-            List<String> classificationIds = AtlasGraphUtilsV2.getProperty(edge, Constants.RELATIONSHIPTYPE_BLOCKED_PROPAGATED_CLASSIFICATIONS_KEY, List.class);
+            List<String> classificationIds = AtlasGraphUtilsV2.getEncodedProperty(edge, RELATIONSHIPTYPE_BLOCKED_PROPAGATED_CLASSIFICATIONS_KEY, List.class);
 
             ret = CollectionUtils.isNotEmpty(classificationIds) ? classificationIds : Collections.emptyList();
         }
@@ -1211,26 +1166,36 @@ public final class GraphHelper {
     }
 
     public static PropagateTags getPropagateTags(AtlasElement element) {
-        String propagateTags = element.getProperty(Constants.RELATIONSHIPTYPE_TAG_PROPAGATION_KEY, String.class);
+        String propagateTags = element.getProperty(RELATIONSHIPTYPE_TAG_PROPAGATION_KEY, String.class);
 
         return (propagateTags == null) ? null : PropagateTags.valueOf(propagateTags);
     }
 
+    public static Status getClassificationEntityStatus(AtlasElement element) {
+        String status = element.getProperty(CLASSIFICATION_ENTITY_STATUS, String.class);
+
+        return (status == null) ? null : Status.valueOf(status);
+    }
+
     //Added conditions in fetching system attributes to handle test failures in GremlinTest where these properties are not set
     public static String getCreatedByAsString(AtlasElement element){
-        return element.getProperty(Constants.CREATED_BY_KEY, String.class);
+        return element.getProperty(CREATED_BY_KEY, String.class);
     }
 
     public static String getModifiedByAsString(AtlasElement element){
-        return element.getProperty(Constants.MODIFIED_BY_KEY, String.class);
+        return element.getProperty(MODIFIED_BY_KEY, String.class);
     }
 
     public static long getCreatedTime(AtlasElement element){
-        return element.getProperty(Constants.TIMESTAMP_PROPERTY_KEY, Long.class);
+        return element.getProperty(TIMESTAMP_PROPERTY_KEY, Long.class);
     }
 
     public static long getModifiedTime(AtlasElement element){
-        return element.getProperty(Constants.MODIFICATION_TIMESTAMP_PROPERTY_KEY, Long.class);
+        return element.getProperty(MODIFICATION_TIMESTAMP_PROPERTY_KEY, Long.class);
+    }
+
+    public static boolean isActive(AtlasEntity entity) {
+        return entity != null ? entity.getStatus() == ACTIVE : false;
     }
 
     /**
@@ -1253,8 +1218,8 @@ public final class GraphHelper {
             String propertyKey = attributeInfo.getQualifiedName();
             try {
                 result = findVertex(propertyKey, instance.get(attributeInfo.getName()),
-                        Constants.ENTITY_TYPE_PROPERTY_KEY, classType.getTypeName(),
-                        Constants.STATE_PROPERTY_KEY, Id.EntityState.ACTIVE.name());
+                        ENTITY_TYPE_PROPERTY_KEY, classType.getTypeName(),
+                        STATE_PROPERTY_KEY, Id.EntityState.ACTIVE.name());
                 if (LOG.isDebugEnabled()) {
                     LOG.debug("Found vertex by unique attribute : {}={}", propertyKey, instance.get(attributeInfo.getName()));
                 }
@@ -1303,8 +1268,8 @@ public final class GraphHelper {
         //construct gremlin query
         AtlasGraphQuery query = graph.query();
 
-        query.has(Constants.ENTITY_TYPE_PROPERTY_KEY, classType.getTypeName());
-        query.has(Constants.STATE_PROPERTY_KEY,Id.EntityState.ACTIVE.name());
+        query.has(ENTITY_TYPE_PROPERTY_KEY, classType.getTypeName());
+        query.has(STATE_PROPERTY_KEY,Id.EntityState.ACTIVE.name());
 
         List<AtlasGraphQuery> orChildren = new ArrayList<AtlasGraphQuery>();
 
@@ -1376,7 +1341,7 @@ public final class GraphHelper {
 
         if (CollectionUtils.isNotEmpty(vertices)) {
             for (AtlasVertex vertex : vertices) {
-                String entityTypeProperty = vertex.getProperty(Constants.ENTITY_TYPE_PROPERTY_KEY, String.class);
+                String entityTypeProperty = vertex.getProperty(ENTITY_TYPE_PROPERTY_KEY, String.class);
 
                 if (entityTypeProperty != null) {
                     ret.add(getTypeName(vertex));
@@ -1617,7 +1582,7 @@ public final class GraphHelper {
 
     // map elements for primitive types
     public static Map<String, Object> getPrimitiveMap(AtlasVertex instanceVertex, String propertyName) {
-        Map<String, Object> ret = instanceVertex.getProperty(encodePropertyKey(propertyName), Map.class);
+        Map<String, Object> ret = instanceVertex.getProperty(AtlasGraphUtilsV2.encodePropertyKey(propertyName), Map.class);
 
         if (ret == null) {
             ret = new HashMap<>();
@@ -1719,17 +1684,6 @@ public final class GraphHelper {
             }});
 
 
-    public static String encodePropertyKey(String key) {
-        if (StringUtils.isBlank(key)) {
-            return key;
-        }
-
-        for (String str : RESERVED_CHARS_ENCODE_MAP.keySet()) {
-            key = key.replace(str, RESERVED_CHARS_ENCODE_MAP.get(str));
-        }
-        return key;
-    }
-
     public static String decodePropertyKey(String key) {
         if (StringUtils.isBlank(key)) {
             return key;
@@ -1771,25 +1725,25 @@ public final class GraphHelper {
 
     public static void setListPropertyFromElementIds(AtlasVertex<?, ?> instanceVertex, String propertyName,
             List<AtlasElement> elements) {
-        String actualPropertyName = GraphHelper.encodePropertyKey(propertyName);
+        String actualPropertyName = AtlasGraphUtilsV2.encodePropertyKey(propertyName);
         instanceVertex.setPropertyFromElementsIds(actualPropertyName, elements);
 
     }
 
     public static void setPropertyFromElementId(AtlasVertex<?, ?> instanceVertex, String propertyName,
             AtlasElement value) {
-        String actualPropertyName = GraphHelper.encodePropertyKey(propertyName);
+        String actualPropertyName = AtlasGraphUtilsV2.encodePropertyKey(propertyName);
         instanceVertex.setPropertyFromElementId(actualPropertyName, value);
 
     }
 
     public static void setListProperty(AtlasVertex instanceVertex, String propertyName, ArrayList<String> value) {
-        String actualPropertyName = GraphHelper.encodePropertyKey(propertyName);
+        String actualPropertyName = AtlasGraphUtilsV2.encodePropertyKey(propertyName);
         instanceVertex.setListProperty(actualPropertyName, value);
     }
 
     public static List<String> getListProperty(AtlasVertex instanceVertex, String propertyName) {
-        String actualPropertyName = GraphHelper.encodePropertyKey(propertyName);
+        String actualPropertyName = AtlasGraphUtilsV2.encodePropertyKey(propertyName);
         return instanceVertex.getListProperty(actualPropertyName);
     }
 
@@ -1895,5 +1849,9 @@ public final class GraphHelper {
 
     private static boolean verticesEquals(AtlasVertex vertexA, AtlasVertex vertexB) {
         return StringUtils.equals(getGuid(vertexB), getGuid(vertexA));
+    }
+
+    public static boolean getDefaultRemovePropagations() {
+        return removePropagations;
     }
 }

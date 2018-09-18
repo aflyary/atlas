@@ -37,6 +37,7 @@ import javax.xml.bind.annotation.XmlSeeAlso;
 import org.apache.atlas.model.PList;
 import org.apache.atlas.model.SearchFilter.SortType;
 import org.apache.atlas.model.TimeBoundary;
+import org.apache.atlas.model.instance.AtlasEntity.Status;
 
 import static com.fasterxml.jackson.annotation.JsonAutoDetect.Visibility.NONE;
 import static com.fasterxml.jackson.annotation.JsonAutoDetect.Visibility.PUBLIC_ONLY;
@@ -53,9 +54,11 @@ import static com.fasterxml.jackson.annotation.JsonAutoDetect.Visibility.PUBLIC_
 public class AtlasClassification extends AtlasStruct implements Serializable {
     private static final long serialVersionUID = 1L;
 
-    private String             entityGuid      = null;
-    private Boolean            propagate       = null;
-    private List<TimeBoundary> validityPeriods = null;
+    private String             entityGuid                        = null;
+    private Status             entityStatus                      = Status.ACTIVE;
+    private Boolean            propagate                         = null;
+    private List<TimeBoundary> validityPeriods                   = null;
+    private Boolean            removePropagationsOnEntityDelete  = null;
 
     public AtlasClassification() {
         this(null, null);
@@ -82,8 +85,10 @@ public class AtlasClassification extends AtlasStruct implements Serializable {
             setTypeName(other.getTypeName());
             setAttributes(other.getAttributes());
             setEntityGuid(other.getEntityGuid());
+            setEntityStatus(other.getEntityStatus());
             setPropagate(other.isPropagate());
             setValidityPeriods(other.getValidityPeriods());
+            setRemovePropagationsOnEntityDelete(other.getRemovePropagationsOnEntityDelete());
         }
     }
 
@@ -111,6 +116,22 @@ public class AtlasClassification extends AtlasStruct implements Serializable {
         this.validityPeriods = validityPeriods;
     }
 
+    public Status getEntityStatus() {
+        return entityStatus;
+    }
+
+    public void setEntityStatus(Status entityStatus) {
+        this.entityStatus = entityStatus;
+    }
+
+    public Boolean getRemovePropagationsOnEntityDelete() {
+        return removePropagationsOnEntityDelete;
+    }
+
+    public void setRemovePropagationsOnEntityDelete(Boolean removePropagationsOnEntityDelete) {
+        this.removePropagationsOnEntityDelete = removePropagationsOnEntityDelete;
+    }
+
     @JsonIgnore
     public void addValityPeriod(TimeBoundary validityPeriod) {
         List<TimeBoundary> vpList = this.validityPeriods;
@@ -131,13 +152,15 @@ public class AtlasClassification extends AtlasStruct implements Serializable {
         if (!super.equals(o)) { return false; }
         AtlasClassification that = (AtlasClassification) o;
         return Objects.equals(propagate, that.propagate) &&
+               Objects.equals(removePropagationsOnEntityDelete, that.removePropagationsOnEntityDelete) &&
                Objects.equals(entityGuid, that.entityGuid) &&
+               entityStatus == that.entityStatus &&
                Objects.equals(validityPeriods, that.validityPeriods);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(super.hashCode(), entityGuid, propagate);
+        return Objects.hash(super.hashCode(), entityGuid, entityStatus, propagate, removePropagationsOnEntityDelete);
     }
 
     @Override
@@ -145,7 +168,10 @@ public class AtlasClassification extends AtlasStruct implements Serializable {
         final StringBuilder sb = new StringBuilder("AtlasClassification{");
         super.toString(sb);
         sb.append("entityGuid='").append(entityGuid).append('\'');
+        sb.append(", entityStatus=").append(entityStatus);
         sb.append(", propagate=").append(propagate);
+        sb.append(", removePropagationsOnEntityDelete=").append(removePropagationsOnEntityDelete);
+        sb.append(", validityPeriods=").append(validityPeriods);
         sb.append(", validityPeriods=").append(validityPeriods);
         sb.append('}');
         return sb.toString();

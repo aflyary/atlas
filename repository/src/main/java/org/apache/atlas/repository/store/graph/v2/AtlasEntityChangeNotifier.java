@@ -38,7 +38,6 @@ import org.apache.atlas.type.AtlasEntityType;
 import org.apache.atlas.type.AtlasTypeRegistry;
 import org.apache.atlas.v1.model.instance.Referenceable;
 import org.apache.atlas.v1.model.instance.Struct;
-import org.apache.atlas.repository.Constants;
 import org.apache.atlas.repository.converters.AtlasInstanceConverter;
 import org.apache.atlas.repository.graph.FullTextMapperV2;
 import org.apache.atlas.repository.graph.GraphHelper;
@@ -56,12 +55,11 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 
 import static org.apache.atlas.model.audit.EntityAuditEventV2.EntityAuditActionV2.PROPAGATED_CLASSIFICATION_ADD;
 import static org.apache.atlas.model.audit.EntityAuditEventV2.EntityAuditActionV2.PROPAGATED_CLASSIFICATION_DELETE;
-import static org.apache.atlas.util.AtlasRepositoryConfiguration.isV2EntityNotificationEnabled;
+import static org.apache.atlas.repository.Constants.ENTITY_TEXT_PROPERTY_KEY;
 
 
 @Component
@@ -73,6 +71,7 @@ public class AtlasEntityChangeNotifier {
     private final AtlasInstanceConverter      instanceConverter;
     private final FullTextMapperV2            fullTextMapperV2;
     private final AtlasTypeRegistry           atlasTypeRegistry;
+    private final boolean                     isV2EntityNotificationEnabled;
 
 
     @Inject
@@ -81,11 +80,12 @@ public class AtlasEntityChangeNotifier {
                                      AtlasInstanceConverter instanceConverter,
                                      FullTextMapperV2 fullTextMapperV2,
                                      AtlasTypeRegistry atlasTypeRegistry) {
-        this.entityChangeListeners   = entityChangeListeners;
-        this.entityChangeListenersV2 = entityChangeListenersV2;
-        this.instanceConverter       = instanceConverter;
-        this.fullTextMapperV2 = fullTextMapperV2;
-        this.atlasTypeRegistry = atlasTypeRegistry;
+        this.entityChangeListeners         = entityChangeListeners;
+        this.entityChangeListenersV2       = entityChangeListenersV2;
+        this.instanceConverter             = instanceConverter;
+        this.fullTextMapperV2              = fullTextMapperV2;
+        this.atlasTypeRegistry             = atlasTypeRegistry;
+        this.isV2EntityNotificationEnabled = AtlasRepositoryConfiguration.isV2EntityNotificationEnabled();
     }
 
     public void onEntitiesMutated(EntityMutationResponse entityMutationResponse, boolean isImport) throws AtlasBaseException {
@@ -113,7 +113,7 @@ public class AtlasEntityChangeNotifier {
     }
 
     public void onClassificationAddedToEntity(AtlasEntity entity, List<AtlasClassification> addedClassifications) throws AtlasBaseException {
-        if (isV2EntityNotificationEnabled()) {
+        if (isV2EntityNotificationEnabled) {
             doFullTextMapping(entity.getGuid());
 
             for (EntityChangeListenerV2 listener : entityChangeListenersV2) {
@@ -140,7 +140,7 @@ public class AtlasEntityChangeNotifier {
     }
 
     public void onClassificationUpdatedToEntity(AtlasEntity entity, List<AtlasClassification> updatedClassifications) throws AtlasBaseException {
-        if (isV2EntityNotificationEnabled()) {
+        if (isV2EntityNotificationEnabled) {
             doFullTextMapping(entity.getGuid());
 
             for (EntityChangeListenerV2 listener : entityChangeListenersV2) {
@@ -167,7 +167,7 @@ public class AtlasEntityChangeNotifier {
     }
 
     public void onClassificationDeletedFromEntity(AtlasEntity entity, List<AtlasClassification> deletedClassifications) throws AtlasBaseException {
-        if (isV2EntityNotificationEnabled()) {
+        if (isV2EntityNotificationEnabled) {
             doFullTextMapping(entity.getGuid());
 
             for (EntityChangeListenerV2 listener : entityChangeListenersV2) {
@@ -196,7 +196,7 @@ public class AtlasEntityChangeNotifier {
 
     public void onTermAddedToEntities(AtlasGlossaryTerm term, List<AtlasRelatedObjectId> entityIds) throws AtlasBaseException {
         // listeners notified on term-entity association only if v2 notifications are enabled
-        if (isV2EntityNotificationEnabled()) {
+        if (isV2EntityNotificationEnabled) {
             for (EntityChangeListenerV2 listener : entityChangeListenersV2) {
                 listener.onTermAdded(term, entityIds);
             }
@@ -215,7 +215,7 @@ public class AtlasEntityChangeNotifier {
 
     public void onTermDeletedFromEntities(AtlasGlossaryTerm term, List<AtlasRelatedObjectId> entityIds) throws AtlasBaseException {
         // listeners notified on term-entity disassociation only if v2 notifications are enabled
-        if (isV2EntityNotificationEnabled()) {
+        if (isV2EntityNotificationEnabled) {
             for (EntityChangeListenerV2 listener : entityChangeListenersV2) {
                 listener.onTermDeleted(term, entityIds);
             }
@@ -278,7 +278,7 @@ public class AtlasEntityChangeNotifier {
             return;
         }
 
-        if (isV2EntityNotificationEnabled()) {
+        if (isV2EntityNotificationEnabled) {
             notifyV2Listeners(entityHeaders, operation, isImport);
         } else {
             notifyV1Listeners(entityHeaders, operation, isImport);
@@ -455,7 +455,7 @@ public class AtlasEntityChangeNotifier {
             try {
                 String fullText = fullTextMapperV2.getIndexTextForEntity(guid);
 
-                GraphHelper.setProperty(vertex, Constants.ENTITY_TEXT_PROPERTY_KEY, fullText);
+                AtlasGraphUtilsV2.setEncodedProperty(vertex, ENTITY_TEXT_PROPERTY_KEY, fullText);
             } catch (AtlasBaseException e) {
                 LOG.error("FullText mapping failed for Vertex[ guid = {} ]", guid, e);
             }
@@ -482,10 +482,10 @@ public class AtlasEntityChangeNotifier {
 
         try {
             String classificationFullText = fullTextMapperV2.getIndexTextForClassifications(entityId, classifications);
-            String existingFullText = (String) GraphHelper.getProperty(atlasVertex, Constants.ENTITY_TEXT_PROPERTY_KEY);
+            String existingFullText       = AtlasGraphUtilsV2.getEncodedProperty(atlasVertex, ENTITY_TEXT_PROPERTY_KEY, String.class);
+            String newFullText            = existingFullText + " " + classificationFullText;
 
-            String newFullText = existingFullText + " " + classificationFullText;
-            GraphHelper.setProperty(atlasVertex, Constants.ENTITY_TEXT_PROPERTY_KEY, newFullText);
+            AtlasGraphUtilsV2.setEncodedProperty(atlasVertex, ENTITY_TEXT_PROPERTY_KEY, newFullText);
         } catch (AtlasBaseException e) {
             LOG.error("FullText mapping failed for Vertex[ guid = {} ]", entityId, e);
         }
