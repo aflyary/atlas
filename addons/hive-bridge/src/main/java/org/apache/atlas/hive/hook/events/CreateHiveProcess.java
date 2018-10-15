@@ -136,9 +136,16 @@ public class CreateHiveProcess extends BaseHiveEvent {
             return;
         }
 
+        final List<AtlasEntity> columnLineages     = new ArrayList<>();
+        int                     lineageInputsCount = 0;
+
         for (Map.Entry<DependencyKey, Dependency> entry : lineageInfo.entrySet()) {
             String      outputColName = getQualifiedName(entry.getKey());
             AtlasEntity outputColumn  = context.getEntity(outputColName);
+
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("processColumnLineage(): DependencyKey={}; Dependency={}", entry.getKey(), entry.getValue());
+            }
 
             if (outputColumn == null) {
                 LOG.warn("column-lineage: non-existing output-column {}", outputColName);
@@ -165,6 +172,8 @@ public class CreateHiveProcess extends BaseHiveEvent {
                 continue;
             }
 
+            lineageInputsCount += inputColumns.size();
+
             AtlasEntity columnLineageProcess = new AtlasEntity(HIVE_TYPE_COLUMN_LINEAGE);
 
             columnLineageProcess.setAttribute(ATTRIBUTE_NAME, hiveProcess.getAttribute(ATTRIBUTE_NAME) + ":" + outputColumn.getAttribute(ATTRIBUTE_NAME));
@@ -175,7 +184,18 @@ public class CreateHiveProcess extends BaseHiveEvent {
             columnLineageProcess.setAttribute(ATTRIBUTE_DEPENDENCY_TYPE, entry.getValue().getType());
             columnLineageProcess.setAttribute(ATTRIBUTE_EXPRESSION, entry.getValue().getExpr());
 
-            entities.addEntity(columnLineageProcess);
+            columnLineages.add(columnLineageProcess);
+        }
+
+        float   avgInputsCount    = columnLineages.size() > 0 ? (((float) lineageInputsCount) / columnLineages.size()) : 0;
+        boolean skipColumnLineage = context.getSkipHiveColumnLineageHive20633() && avgInputsCount > context.getSkipHiveColumnLineageHive20633InputsThreshold();
+
+        if (!skipColumnLineage) {
+            for (AtlasEntity columnLineage : columnLineages) {
+                entities.addEntity(columnLineage);
+            }
+        } else {
+            LOG.warn("skipped {} hive_column_lineage entities. Average # of inputs={}, threshold={}, total # of inputs={}", columnLineages.size(), avgInputsCount, context.getSkipHiveColumnLineageHive20633InputsThreshold(), lineageInputsCount);
         }
     }
 

@@ -41,11 +41,16 @@ define(['require', 'utils/Enums', 'utils/Utils', 'underscore'], function(require
             return this.getDefApiUrl('enum', name);
         },
         getDefApiUrl: function(type, name) {
-            var defApiUrl = this.typedefsUrl();
+            var defApiUrl = this.typedefsUrl(), defUrl;
             if (name) {
-                return defApiUrl.def + '/name/' + name + '?type=' + type;
+                defUrl = defApiUrl.def + '/name/' + name;
             } else {
-                return defApiUrl.defs + '?excludeInternalTypesAndReferences=true&type=' + type;
+                defUrl = defApiUrl.defs;
+            }
+            if (type) {
+                return defUrl += '?type=' + type;
+            } else {
+                return defUrl;
             }
         },
         entitiesApiUrl: function(options) {
@@ -83,6 +88,29 @@ define(['require', 'utils/Enums', 'utils/Utils', 'underscore'], function(require
         },
         entityCollectionaudit: function(guid) {
             return this.baseUrlV2 + '/entity/' + guid + '/audit';
+        },
+        expimpAudit: function(options) {
+            var url = this.baseUrl + '/admin/expimp/audit',
+                queryParam = [];
+            if (options) {
+                var serverName = options.serverName,
+                    limit = options.limit,
+                    offset = options.offset;
+            }
+
+            if (serverName) {
+                queryParam.push("serverName=" + serverName);
+            }
+            if (limit) {
+                queryParam.push("limit=" + limit);
+            }
+            if (offset) {
+                queryParam.push("offset=" + offset);
+            }
+            if (queryParam.length > 0) {
+                url = url + "?" + queryParam.join("&");
+            }
+            return url;
         },
         classicationApiUrl: function(name, guid) {
             var typeUrl = this.typedefsUrl();

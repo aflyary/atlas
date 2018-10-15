@@ -29,8 +29,9 @@ import org.apache.atlas.RequestContext;
 import org.apache.atlas.ha.HAConfiguration;
 import org.apache.atlas.kafka.AtlasKafkaMessage;
 import org.apache.atlas.listener.ActiveStateChangeHandler;
-import org.apache.atlas.model.instance.AtlasEntity.AtlasEntitiesWithExtInfo;
+import org.apache.atlas.model.instance.AtlasEntity;
 import org.apache.atlas.model.instance.AtlasEntity.AtlasEntityWithExtInfo;
+import org.apache.atlas.model.instance.AtlasEntity.AtlasEntitiesWithExtInfo;
 import org.apache.atlas.model.instance.AtlasObjectId;
 import org.apache.atlas.model.notification.HookNotification;
 import org.apache.atlas.model.notification.HookNotification.EntityCreateRequestV2;
@@ -55,6 +56,7 @@ import org.apache.atlas.web.filters.AuditFilter;
 import org.apache.atlas.web.filters.AuditFilter.AuditLog;
 import org.apache.atlas.web.service.ServiceState;
 import org.apache.commons.configuration.Configuration;
+import org.apache.commons.lang.StringUtils;
 import org.apache.kafka.common.TopicPartition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,7 +65,11 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import javax.inject.Inject;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.ListIterator;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -82,6 +88,9 @@ public class NotificationHookConsumer implements Service, ActiveStateChangeHandl
 
     private static final int    SC_OK          = 200;
     private static final int    SC_BAD_REQUEST = 400;
+    private static final String TYPE_HIVE_COLUMN_LINEAGE = "hive_column_lineage";
+    private static final String ATTRIBUTE_INPUTS         = "inputs";
+
     private static final String THREADNAME_PREFIX = NotificationHookConsumer.class.getSimpleName();
 
     public static final String CONSUMER_THREADS_PROPERTY         = "atlas.notification.hook.numthreads";
@@ -90,6 +99,9 @@ public class NotificationHookConsumer implements Service, ActiveStateChangeHandl
     public static final String CONSUMER_RETRY_INTERVAL           = "atlas.notification.consumer.retry.interval";
     public static final String CONSUMER_MIN_RETRY_INTERVAL       = "atlas.notification.consumer.min.retry.interval";
     public static final String CONSUMER_MAX_RETRY_INTERVAL       = "atlas.notification.consumer.max.retry.interval";
+
+    public static final String CONSUMER_SKIP_HIVE_COLUMN_LINEAGE_HIVE_20633                  = "atlas.notification.consumer.skip.hive_column_lineage.hive-20633";
+    public static final String CONSUMER_SKIP_HIVE_COLUMN_LINEAGE_HIVE_20633_INPUTS_THRESHOLD = "atlas.notification.consumer.skip.hive_column_lineage.hive-20633.inputs.threshold";
 
     public static final int SERVER_READY_WAIT_TIME_MS = 1000;
 
@@ -101,6 +113,8 @@ public class NotificationHookConsumer implements Service, ActiveStateChangeHandl
     private final int                    failedMsgCacheSize;
     private final int                    minWaitDuration;
     private final int                    maxWaitDuration;
+    private final boolean                skipHiveColumnLineageHive20633;
+    private final int                    skipHiveColumnLineageHive20633InputsThreshold;
 
     private NotificationInterface notificationInterface;
     private ExecutorService       executors;
@@ -124,10 +138,16 @@ public class NotificationHookConsumer implements Service, ActiveStateChangeHandl
         this.applicationProperties = ApplicationProperties.get();
 
         maxRetries            = applicationProperties.getInt(CONSUMER_RETRIES_PROPERTY, 3);
-        failedMsgCacheSize    = applicationProperties.getInt(CONSUMER_FAILEDCACHESIZE_PROPERTY, 20);
+        failedMsgCacheSize    = applicationProperties.getInt(CONSUMER_FAILEDCACHESIZE_PROPERTY, 1);
         consumerRetryInterval = applicationProperties.getInt(CONSUMER_RETRY_INTERVAL, 500);
         minWaitDuration       = applicationProperties.getInt(CONSUMER_MIN_RETRY_INTERVAL, consumerRetryInterval); // 500 ms  by default
         maxWaitDuration       = applicationProperties.getInt(CONSUMER_MAX_RETRY_INTERVAL, minWaitDuration * 60);  //  30 sec by default
+
+        skipHiveColumnLineageHive20633                = applicationProperties.getBoolean(CONSUMER_SKIP_HIVE_COLUMN_LINEAGE_HIVE_20633, false);
+        skipHiveColumnLineageHive20633InputsThreshold = applicationProperties.getInt(CONSUMER_SKIP_HIVE_COLUMN_LINEAGE_HIVE_20633_INPUTS_THRESHOLD, 15); // skip if avg # of inputs is > 15
+
+        LOG.info("{}={}", CONSUMER_SKIP_HIVE_COLUMN_LINEAGE_HIVE_20633, skipHiveColumnLineageHive20633);
+        LOG.info("{}={}", CONSUMER_SKIP_HIVE_COLUMN_LINEAGE_HIVE_20633_INPUTS_THRESHOLD, skipHiveColumnLineageHive20633InputsThreshold);
     }
 
     @Override
@@ -294,7 +314,7 @@ public class NotificationHookConsumer implements Service, ActiveStateChangeHandl
     class HookConsumer extends ShutdownableThread {
         private final NotificationConsumer<HookNotification> consumer;
         private final AtomicBoolean                          shouldRun      = new AtomicBoolean(false);
-        private final List<HookNotification>                 failedMessages = new ArrayList<>();
+        private final List<String>                           failedMessages = new ArrayList<>();
         private final AdaptiveWaiter                         adaptiveWaiter = new AdaptiveWaiter(minWaitDuration, maxWaitDuration, minWaitDuration);
 
         @VisibleForTesting
@@ -366,6 +386,8 @@ public class NotificationHookConsumer implements Service, ActiveStateChangeHandl
                     commit(kafkaMsg);
                     return;
                 }
+
+                preProcessNotificationMessage(kafkaMsg);
 
                 // Used for intermediate conversions during create and update
                 for (int numRetries = 0; numRetries < maxRetries; numRetries++) {
@@ -523,26 +545,29 @@ public class NotificationHookConsumer implements Service, ActiveStateChangeHandl
                     } catch (Throwable e) {
                         RequestContext.get().resetEntityGuidUpdates();
 
-                        LOG.warn("Error handling message", e);
-                        try {
-                            LOG.info("Sleeping for {} ms before retry", consumerRetryInterval);
-
-                            Thread.sleep(consumerRetryInterval);
-                        } catch (InterruptedException ie) {
-                            LOG.error("Notification consumer thread sleep interrupted");
-                        }
-
                         if (numRetries == (maxRetries - 1)) {
-                            LOG.warn("Max retries exceeded for message {}", message, e);
+                            String strMessage = AbstractNotification.getMessageJson(message);
+
+                            LOG.warn("Max retries exceeded for message {}", strMessage, e);
 
                             isFailedMsg = true;
 
-                            failedMessages.add(message);
+                            failedMessages.add(strMessage);
 
                             if (failedMessages.size() >= failedMsgCacheSize) {
                                 recordFailedMessages();
                             }
                             return;
+                        } else {
+                            LOG.warn("Error handling message", e);
+
+                            try {
+                                LOG.info("Sleeping for {} ms before retry", consumerRetryInterval);
+
+                                Thread.sleep(consumerRetryInterval);
+                            } catch (InterruptedException ie) {
+                                LOG.error("Notification consumer thread sleep interrupted");
+                            }
                         }
                     } finally {
                         RequestContext.clear();
@@ -564,8 +589,8 @@ public class NotificationHookConsumer implements Service, ActiveStateChangeHandl
 
         private void recordFailedMessages() {
             //logging failed messages
-            for (HookNotification message : failedMessages) {
-                FAILED_LOG.error("[DROPPED_NOTIFICATION] {}", AbstractNotification.getMessageJson(message));
+            for (String message : failedMessages) {
+                FAILED_LOG.error("[DROPPED_NOTIFICATION] {}", message);
             }
 
             failedMessages.clear();
@@ -630,6 +655,75 @@ public class NotificationHookConsumer implements Service, ActiveStateChangeHandl
             super.awaitShutdown();
 
             LOG.info("<== HookConsumer shutdown()");
+        }
+    }
+
+    private void preProcessNotificationMessage(AtlasKafkaMessage<HookNotification> kafkaMsg) {
+        skipHiveColumnLineage(kafkaMsg);
+    }
+
+    private void skipHiveColumnLineage(AtlasKafkaMessage<HookNotification> kafkaMessage) {
+        if (!skipHiveColumnLineageHive20633) {
+            return;
+        }
+
+        final HookNotification         message = kafkaMessage.getMessage();
+        final AtlasEntitiesWithExtInfo entities;
+
+        switch (message.getType()) {
+            case ENTITY_CREATE_V2:
+                entities = ((EntityCreateRequestV2) message).getEntities();
+            break;
+
+            case ENTITY_FULL_UPDATE_V2:
+                entities = ((EntityUpdateRequestV2) message).getEntities();
+                break;
+
+            default:
+                entities = null;
+            break;
+        }
+
+        if (entities != null && entities.getEntities() != null) {
+            int lineageCount       = 0;
+            int lineageInputsCount = 0;
+
+            // find if all hive_column_lineage entities have same number of inputs, which is likely to be caused by HIVE-20633 that results in incorrect lineage in some cases
+            for (ListIterator<AtlasEntity> iter = entities.getEntities().listIterator(); iter.hasNext(); ) {
+                AtlasEntity entity = iter.next();
+
+                if (StringUtils.equals(entity.getTypeName(), TYPE_HIVE_COLUMN_LINEAGE)) {
+                    lineageCount++;
+
+                    Object objInputs = entity.getAttribute(ATTRIBUTE_INPUTS);
+
+                    if (objInputs instanceof Collection) {
+                        Collection inputs = (Collection) objInputs;
+
+                        lineageInputsCount += inputs.size();
+                    }
+                }
+            }
+
+            float avgInputsCount = lineageCount > 0 ? (((float) lineageInputsCount) / lineageCount) : 0;
+
+            if (avgInputsCount > skipHiveColumnLineageHive20633InputsThreshold) {
+                int numRemovedEntities = 0;
+
+                for (ListIterator<AtlasEntity> iter = entities.getEntities().listIterator(); iter.hasNext(); ) {
+                    AtlasEntity entity = iter.next();
+
+                    if (StringUtils.equals(entity.getTypeName(), TYPE_HIVE_COLUMN_LINEAGE)) {
+                        iter.remove();
+
+                        numRemovedEntities++;
+                    }
+                }
+
+                if (numRemovedEntities > 0) {
+                    LOG.warn("removed {} hive_column_lineage entities. Average # of inputs={}, threshold={}, total # of inputs={}. topic-offset={}, partition={}", numRemovedEntities, avgInputsCount, skipHiveColumnLineageHive20633InputsThreshold, lineageInputsCount, kafkaMessage.getOffset(), kafkaMessage.getPartition());
+                }
+            }
         }
     }
 

@@ -569,16 +569,9 @@ define(['require',
             },
             onNotifyOk: function(data) {
                 var that = this,
-                    deleteTagData = this.collection.fullCollection.findWhere({ name: this.tag }),
-                    classificationData = deleteTagData.toJSON(),
-                    deleteJson = {
-                        classificationDefs: [classificationData],
-                        entityDefs: [],
-                        enumDefs: [],
-                        structDefs: []
-                    };
+                    deleteTagData = this.collection.fullCollection.findWhere({ name: this.tag });
                 deleteTagData.deleteTag({
-                    data: JSON.stringify(deleteJson),
+                    typeName: that.tag,
                     success: function() {
                         Utils.notifySuccess({
                             content: "Classification " + that.tag + Messages.deleteSuccessMessage

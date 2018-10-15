@@ -32,10 +32,12 @@ public class RequestContext {
     private static final Logger LOG = LoggerFactory.getLogger(RequestContext.class);
 
     private static final ThreadLocal<RequestContext> CURRENT_CONTEXT = new ThreadLocal<>();
+    private static final Set<RequestContext>         ACTIVE_REQUESTS = new HashSet<>();
 
     private final Map<String, AtlasObjectId>             updatedEntities     = new HashMap<>();
     private final Map<String, AtlasObjectId>             deletedEntities     = new HashMap<>();
-    private final Map<String, AtlasEntityWithExtInfo>    entityCacheV2       = new HashMap<>();
+    private final Map<String, AtlasEntity>               entityCache         = new HashMap<>();
+    private final Map<String, AtlasEntityWithExtInfo>    entityExtInfoCache  = new HashMap<>();
     private final Map<String, List<AtlasClassification>> addedPropagations   = new HashMap<>();
     private final Map<String, List<AtlasClassification>> removedPropagations = new HashMap<>();
     private final long                                   requestTime         = System.currentTimeMillis();
@@ -59,6 +61,10 @@ public class RequestContext {
         if (ret == null) {
             ret = new RequestContext();
             CURRENT_CONTEXT.set(ret);
+
+            synchronized (ACTIVE_REQUESTS) {
+                ACTIVE_REQUESTS.add(ret);
+            }
         }
 
         return ret;
@@ -70,16 +76,26 @@ public class RequestContext {
         if (instance != null) {
             instance.updatedEntities.clear();
             instance.deletedEntities.clear();
-            instance.entityCacheV2.clear();
+            instance.entityCache.clear();
+            instance.entityExtInfoCache.clear();
             instance.addedPropagations.clear();
             instance.removedPropagations.clear();
 
             if (instance.entityGuidInRequest != null) {
                 instance.entityGuidInRequest.clear();
             }
+
+            synchronized (ACTIVE_REQUESTS) {
+                ACTIVE_REQUESTS.remove(instance);
+            }
         }
 
         CURRENT_CONTEXT.remove();
+    }
+
+    public static String getCurrentUser() {
+        RequestContext context = CURRENT_CONTEXT.get();
+        return context != null ? context.getUser() : null;
     }
 
     public String getUser() {
@@ -146,6 +162,30 @@ public class RequestContext {
         }
     }
 
+    public static RequestContext createContext() {
+        clear();
+
+        return get();
+    }
+
+    public static int getActiveRequestsCount() {
+        return ACTIVE_REQUESTS.size();
+    }
+
+    public static long earliestActiveRequestTime() {
+        long ret = System.currentTimeMillis();
+
+        synchronized (ACTIVE_REQUESTS) {
+            for (RequestContext context : ACTIVE_REQUESTS) {
+                if (ret > context.getRequestTime()) {
+                    ret = context.getRequestTime();
+                }
+            }
+        }
+
+        return ret;
+    }
+
     public void recordRemovedPropagation(String guid, AtlasClassification classification) {
         if (StringUtils.isNotEmpty(guid) && classification != null) {
             List<AtlasClassification> classifications = removedPropagations.get(guid);
@@ -174,9 +214,17 @@ public class RequestContext {
      */
     public void cache(AtlasEntityWithExtInfo entity) {
         if (entity != null && entity.getEntity() != null && entity.getEntity().getGuid() != null) {
-            entityCacheV2.put(entity.getEntity().getGuid(), entity);
+            entityExtInfoCache.put(entity.getEntity().getGuid(), entity);
+            entityCache.put(entity.getEntity().getGuid(), entity.getEntity());
         }
     }
+
+    public void cache(AtlasEntity entity) {
+        if (entity != null && entity.getGuid() != null) {
+            entityCache.put(entity.getGuid(), entity);
+        }
+    }
+
 
     public Collection<AtlasObjectId> getUpdatedEntities() {
         return updatedEntities.values();
@@ -193,8 +241,12 @@ public class RequestContext {
      * @param guid the guid to find
      * @return Either the instance or null if it is not in the cache.
      */
-    public AtlasEntityWithExtInfo getInstanceV2(String guid) {
-        return entityCacheV2.get(guid);
+    public AtlasEntityWithExtInfo getEntityWithExtInfo(String guid) {
+        return entityExtInfoCache.get(guid);
+    }
+
+    public AtlasEntity getEntity(String guid) {
+        return entityCache.get(guid);
     }
 
     public long getRequestTime() {

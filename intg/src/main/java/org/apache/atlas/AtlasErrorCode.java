@@ -153,6 +153,7 @@ public enum AtlasErrorCode {
     INVALID_TIMEBOUNDRY_END_TIME(400, "ATLAS-400-00-87C", "Invalid endTime {0}"),
     INVALID_TIMEBOUNDRY_DATERANGE(400, "ATLAS-400-00-87D", "Invalid dateRange: startTime {0} must be before endTime {1}"),
     PROPAGATED_CLASSIFICATION_REMOVAL_NOT_SUPPORTED(400, "ATLAS-400-00-87E", "Removal of classification {0}, which is propagated from entity {1}, is not supported"),
+    IMPORT_ATTEMPTING_EMPTY_ZIP(400, "ATLAS-400-00-87F", "Attempting to import empty ZIP file."),
 
     UNAUTHORIZED_ACCESS(403, "ATLAS-403-00-001", "{0} is not authorized to perform {1}"),
 
@@ -173,7 +174,7 @@ public enum AtlasErrorCode {
     RELATIONSHIPDEF_END_TYPE_NAME_NOT_FOUND(404, "ATLAS-404-00-00E", "RelationshipDef {0} endDef typename {0} cannot be found"),
     RELATIONSHIP_ALREADY_DELETED(404, "ATLAS-404-00-00F", "Attempting to delete a relationship which is already deleted : {0}"),
     INVALID_ENTITY_GUID_FOR_CLASSIFICATION_UPDATE(404, "ATLAS-404-00-010", "Updating entityGuid of classification is not allowed."),
-    INSTANCE_GUID_NOT_DATASET(404, "ATLAS-404-00-011", "Given instance guid {0} is not a dataset"),
+    INVALID_LINEAGE_ENTITY_TYPE(404, "ATLAS-404-00-011", "Given instance guid {0} with type {1} is not a valid lineage entity type."),
     INSTANCE_GUID_DELETED(404, "ATLAS-404-00-012", "Given instance guid {0} has been deleted"),
     NO_PROPAGATED_CLASSIFICATIONS_FOUND_FOR_ENTITY(404, "ATLAS-404-00-013", "No propagated classifications associated with entity: {0}"),
 

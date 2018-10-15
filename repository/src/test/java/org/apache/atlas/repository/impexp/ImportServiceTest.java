@@ -40,6 +40,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testng.ITestContext;
 import org.testng.annotations.AfterClass;
+import org.testng.annotations.AfterTest;
 import org.testng.annotations.BeforeTest;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Guice;
@@ -51,13 +52,22 @@ import java.util.List;
 import java.util.Map;
 
 import static org.apache.atlas.graph.GraphSandboxUtil.useLocalSolr;
-import static org.apache.atlas.repository.impexp.ZipFileResourceTestUtils.*;
+import static org.apache.atlas.repository.impexp.ZipFileResourceTestUtils.getDefaultImportRequest;
+import static org.apache.atlas.repository.impexp.ZipFileResourceTestUtils.getZipSource;
+import static org.apache.atlas.repository.impexp.ZipFileResourceTestUtils.loadModelFromJson;
+import static org.apache.atlas.repository.impexp.ZipFileResourceTestUtils.loadModelFromResourcesJson;
+import static org.apache.atlas.repository.impexp.ZipFileResourceTestUtils.runAndVerifyQuickStart_v1_Import;
+import static org.apache.atlas.repository.impexp.ZipFileResourceTestUtils.runImportWithNoParameters;
+import static org.apache.atlas.repository.impexp.ZipFileResourceTestUtils.runImportWithParameters;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
-import static org.testng.Assert.*;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertNotNull;
+import static org.testng.Assert.assertTrue;
 
 @Guice(modules = TestModules.TestOnlyModule.class)
-public class ImportServiceTest {
+public class ImportServiceTest extends ExportImportTestBase {
     private static final Logger LOG = LoggerFactory.getLogger(ImportServiceTest.class);
     private static final int DEFAULT_LIMIT = 25;
     private final ImportService importService;
@@ -73,6 +83,9 @@ public class ImportServiceTest {
 
     @Inject
     AtlasEntityStore entityStore;
+
+    @Inject
+    private ExportImportAuditService auditService;
 
     @Inject
     public ImportServiceTest(ImportService importService) {
@@ -94,8 +107,13 @@ public class ImportServiceTest {
         }
     }
 
+    @AfterTest
+    public void postTest() throws InterruptedException {
+        assertAuditEntry(auditService);
+    }
+
     @DataProvider(name = "sales")
-    public static Object[][] getDataFromQuickStart_v1_Sales(ITestContext context) throws IOException {
+    public static Object[][] getDataFromQuickStart_v1_Sales(ITestContext context) throws IOException, AtlasBaseException {
         return getZipSource("sales-v1-full.zip");
     }
 
@@ -112,7 +130,7 @@ public class ImportServiceTest {
     }
 
     @DataProvider(name = "reporting")
-    public static Object[][] getDataFromReporting() throws IOException {
+    public static Object[][] getDataFromReporting() throws IOException, AtlasBaseException {
         return getZipSource("reporting-v1-full.zip");
     }
 
@@ -123,7 +141,7 @@ public class ImportServiceTest {
     }
 
     @DataProvider(name = "logging")
-    public static Object[][] getDataFromLogging(ITestContext context) throws IOException {
+    public static Object[][] getDataFromLogging(ITestContext context) throws IOException, AtlasBaseException {
         return getZipSource("logging-v1-full.zip");
     }
 
@@ -134,7 +152,7 @@ public class ImportServiceTest {
     }
 
     @DataProvider(name = "salesNewTypeAttrs")
-    public static Object[][] getDataFromSalesNewTypeAttrs(ITestContext context) throws IOException {
+    public static Object[][] getDataFromSalesNewTypeAttrs(ITestContext context) throws IOException, AtlasBaseException {
         return getZipSource("salesNewTypeAttrs.zip");
     }
 
@@ -145,7 +163,7 @@ public class ImportServiceTest {
     }
 
     @DataProvider(name = "salesNewTypeAttrs-next")
-    public static Object[][] getDataFromSalesNewTypeAttrsNext(ITestContext context) throws IOException {
+    public static Object[][] getDataFromSalesNewTypeAttrsNext(ITestContext context) throws IOException, AtlasBaseException {
         return getZipSource("salesNewTypeAttrs-next.zip");
     }
 
@@ -182,7 +200,7 @@ public class ImportServiceTest {
     }
 
     @DataProvider(name = "ctas")
-    public static Object[][] getDataFromCtas(ITestContext context) throws IOException {
+    public static Object[][] getDataFromCtas(ITestContext context) throws IOException, AtlasBaseException {
         return getZipSource("ctas.zip");
     }
 
@@ -195,7 +213,7 @@ public class ImportServiceTest {
     }
 
     @DataProvider(name = "stocks-legacy")
-    public static Object[][] getDataFromLegacyStocks(ITestContext context) throws IOException {
+    public static Object[][] getDataFromLegacyStocks(ITestContext context) throws IOException, AtlasBaseException {
         return getZipSource("stocks.zip");
     }
 
@@ -236,7 +254,7 @@ public class ImportServiceTest {
     }
 
     @DataProvider(name = "stocks-glossary")
-    public static Object[][] getDataFromGlossary(ITestContext context) throws IOException {
+    public static Object[][] getDataFromGlossary(ITestContext context) throws IOException, AtlasBaseException {
         return getZipSource("stocks-glossary.zip");
     }
 
@@ -258,7 +276,7 @@ public class ImportServiceTest {
     }
 
     @DataProvider(name = "hdfs_path1")
-    public static Object[][] getDataFromHdfsPath1(ITestContext context) throws IOException {
+    public static Object[][] getDataFromHdfsPath1(ITestContext context) throws IOException, AtlasBaseException {
         return getZipSource("hdfs_path1.zip");
     }
 
@@ -280,12 +298,12 @@ public class ImportServiceTest {
     }
 
     @DataProvider(name = "relationshipLineage")
-    public static Object[][] getImportWithRelationships(ITestContext context) throws IOException {
+    public static Object[][] getImportWithRelationships(ITestContext context) throws IOException, AtlasBaseException {
         return getZipSource("rel-lineage.zip");
     }
 
     @DataProvider(name = "tag-prop-2")
-    public static Object[][] getImportWithTagProp2(ITestContext context) throws IOException {
+    public static Object[][] getImportWithTagProp2(ITestContext context) throws IOException, AtlasBaseException {
         return getZipSource("tag-prop-2.zip");
     }
 
@@ -298,7 +316,7 @@ public class ImportServiceTest {
     }
 
     @DataProvider(name = "relationship")
-    public static Object[][] getImportWithRelationshipsWithLineage(ITestContext context) throws IOException {
+    public static Object[][] getImportWithRelationshipsWithLineage(ITestContext context) throws IOException, AtlasBaseException {
         return getZipSource("stocks-rel-2.zip");
     }
 
@@ -337,7 +355,7 @@ public class ImportServiceTest {
 
     @Test
     public void importServiceProcessesIOException() {
-        ImportService importService = new ImportService(typeDefStore, typeRegistry, null);
+        ImportService importService = new ImportService(typeDefStore, typeRegistry, null, null,null);
         AtlasImportRequest req = mock(AtlasImportRequest.class);
 
         Answer<Map> answer = invocationOnMock -> {
@@ -373,5 +391,44 @@ public class ImportServiceTest {
 
     private AtlasEntity.AtlasEntityWithExtInfo getEntity(AtlasEntityHeader header) throws AtlasBaseException {
         return entityStore.getById(header.getGuid());
+    }
+
+    @Test(dataProvider = "salesNewTypeAttrs-next")
+    public void transformUpdatesForSubTypes(ZipSource zipSource) throws IOException, AtlasBaseException {
+        loadBaseModel();
+        loadHiveModel();
+
+        String transformJSON = "{ \"Asset\": { \"qualifiedName\":[ \"lowercase\", \"replace:@cl1:@cl2\" ] } }";
+        importService.setImportTransform(zipSource, transformJSON);
+        ImportTransforms importTransforms = zipSource.getImportTransform();
+
+        assertTrue(importTransforms.getTransforms().containsKey("Asset"));
+        assertTrue(importTransforms.getTransforms().containsKey("hive_table"));
+        assertTrue(importTransforms.getTransforms().containsKey("hive_column"));
+    }
+
+    @Test(dataProvider = "salesNewTypeAttrs-next")
+    public void transformUpdatesForSubTypesAddsToExistingTransforms(ZipSource zipSource) throws IOException, AtlasBaseException {
+        loadBaseModel();
+        loadHiveModel();
+
+        String transformJSON = "{ \"Asset\": { \"qualifiedName\":[ \"replace:@cl1:@cl2\" ] }, \"hive_table\": { \"qualifiedName\":[ \"lowercase\" ] } }";
+        importService.setImportTransform(zipSource, transformJSON);
+        ImportTransforms importTransforms = zipSource.getImportTransform();
+
+        assertTrue(importTransforms.getTransforms().containsKey("Asset"));
+        assertTrue(importTransforms.getTransforms().containsKey("hive_table"));
+        assertTrue(importTransforms.getTransforms().containsKey("hive_column"));
+        assertEquals(importTransforms.getTransforms().get("hive_table").get("qualifiedName").size(), 2);
+    }
+
+    @Test(dataProvider = "empty-zip", expectedExceptions = AtlasBaseException.class)
+    public void importEmptyZip(ZipSource zipSource) {
+
+    }
+
+    @Test(expectedExceptions = AtlasBaseException.class)
+    public void importEmptyZip() throws IOException, AtlasBaseException {
+        getZipSource("empty.zip");
     }
 }
